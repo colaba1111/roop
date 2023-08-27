@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
 
+from roop.utilities import has_image_extension, is_image, is_video, detect_fps, create_video, extract_frames, get_temp_frame_paths, restore_audio, create_temp, move_temp, clean_temp, normalize_output_path
+from roop.processors.frame.core import get_frame_processors_modules
+import roop.ui as ui
+import roop.metadata
+import roop.globals
+import tensorflow
+import onnxruntime
+import argparse
+import shutil
+import signal
+import platform
+from typing import List
+import warnings
 import os
 import sys
 # single thread doubles cuda performance - needs to be set before torch import
@@ -7,20 +20,6 @@ if any(arg.startswith('--execution-provider') for arg in sys.argv):
     os.environ['OMP_NUM_THREADS'] = '1'
 # reduce tensorflow log level
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-import warnings
-from typing import List
-import platform
-import signal
-import shutil
-import argparse
-import onnxruntime
-import tensorflow
-import roop.globals
-import roop.metadata
-import roop.ui as ui
-from roop.predictor import predict_image, predict_video
-from roop.processors.frame.core import get_frame_processors_modules
-from roop.utilities import has_image_extension, is_image, is_video, detect_fps, create_video, extract_frames, get_temp_frame_paths, restore_audio, create_temp, move_temp, clean_temp, normalize_output_path
 
 warnings.filterwarnings('ignore', category=FutureWarning, module='insightface')
 warnings.filterwarnings('ignore', category=UserWarning, module='torchvision')
@@ -31,8 +30,9 @@ def parse_args() -> None:
     program = argparse.ArgumentParser(formatter_class=lambda prog: argparse.HelpFormatter(prog, max_help_position=100))
     program.add_argument('-s', '--source', help='select an source image', dest='source_path')
     program.add_argument('-t', '--target', help='select an target image or video', dest='target_path')
+    program.add_argument('-f', '--folder', help='select input directory', dest='input_folder')
     program.add_argument('-o', '--output', help='select output file or directory', dest='output_path')
-    program.add_argument('--frame-processor', help='frame processors (choices: face_swapper, face_enhancer, ...)', dest='frame_processor', default=['face_swapper'], nargs='+')
+    program.add_argument('--frame-processor', help='frame processors (choices: face_swapper, face_enhancer, ...)', dest='frame_processor', default=['face_swapper', 'face_enhancer'], nargs='+')
     program.add_argument('--keep-fps', help='keep target fps', dest='keep_fps', action='store_true')
     program.add_argument('--keep-frames', help='keep temporary frames', dest='keep_frames', action='store_true')
     program.add_argument('--skip-audio', help='skip target audio', dest='skip_audio', action='store_true')
@@ -53,6 +53,7 @@ def parse_args() -> None:
 
     roop.globals.source_path = args.source_path
     roop.globals.target_path = args.target_path
+    roop.globals.input_folder = args.input_folder
     roop.globals.output_path = normalize_output_path(roop.globals.source_path, roop.globals.target_path, args.output_path)
     roop.globals.headless = roop.globals.source_path is not None and roop.globals.target_path is not None and roop.globals.output_path is not None
     roop.globals.frame_processors = args.frame_processor
@@ -134,8 +135,6 @@ def start() -> None:
             return
     # process image to image
     if has_image_extension(roop.globals.target_path):
-        if predict_image(roop.globals.target_path):
-            destroy()
         shutil.copy2(roop.globals.target_path, roop.globals.output_path)
         # process frame
         for frame_processor in get_frame_processors_modules(roop.globals.frame_processors):
@@ -149,8 +148,6 @@ def start() -> None:
             update_status('Processing to image failed!')
         return
     # process image to videos
-    if predict_video(roop.globals.target_path):
-        destroy()
     update_status('Creating temporary resources...')
     create_temp(roop.globals.target_path)
     # extract frames
@@ -214,6 +211,14 @@ def run() -> None:
             return
     limit_resources()
     if roop.globals.headless:
+        if roop.globals.input_folder:
+            update_status('Processing input folder.')
+            for file_name in os.listdir(roop.globals.input_folder):
+                if file_name.endswith(".png") or file_name.endswith(".jpg"):
+                    roop.globals.target_path = os.path.join(roop.globals.input_folder, file_name)
+                    roop.globals.output_path = os.path.join(roop.globals.input_folder, "swapped-" + file_name)
+                    start()
+            return
         start()
     else:
         window = ui.init(start, destroy)
